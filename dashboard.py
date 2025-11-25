@@ -14,12 +14,81 @@ Ejecutar: python dashboard.py
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, Input, Output, callback
+from dash import Dash, dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import warnings
 import os
+from dotenv import load_dotenv
+import google.generativeai as genai
 
 warnings.filterwarnings('ignore')
+
+# =============================================================================
+# CONFIGURACIÓN DE GEMINI AI
+# =============================================================================
+
+# Cargar variables de entorno desde .env
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("⚠️ GEMINI_API_KEY no encontrada. Crea un archivo .env con la clave.")
+
+def generar_consejo_ia(datos_jugador, nombre_jugador):
+    """
+    Genera un consejo personalizado usando Gemini AI basado en los datos del jugador.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        # Extraer métricas del jugador
+        velocidad_prom = datos_jugador['player_speed_mps_mean'].mean() if 'player_speed_mps_mean' in datos_jugador.columns else 0
+        aceleracion_prom = datos_jugador['player_acceleration_mps2_mean'].mean() if 'player_acceleration_mps2_mean' in datos_jugador.columns else 0
+        desplazamiento_total = datos_jugador['player_displacement_m_sum'].sum() if 'player_displacement_m_sum' in datos_jugador.columns else 0
+        nivel_rendimiento = datos_jugador['nivel_rendimiento'].iloc[-1] if 'nivel_rendimiento' in datos_jugador.columns else "N/A"
+        estado_declarado = datos_jugador['ESTADO_FISICO_first'].iloc[-1] if 'ESTADO_FISICO_first' in datos_jugador.columns else "N/A"
+        evaluacion = datos_jugador['evaluacion'].iloc[-1] if 'evaluacion' in datos_jugador.columns else "N/A"
+        edad = datos_jugador['EDAD_first'].iloc[0] if 'EDAD_first' in datos_jugador.columns else "N/A"
+        nivel_padel = datos_jugador['NIVEL_ACTUAL_PADEL_first'].iloc[0] if 'NIVEL_ACTUAL_PADEL_first' in datos_jugador.columns else "N/A"
+        num_partidos = len(datos_jugador)
+        
+        prompt = f"""
+        Eres un entrenador experto de pádel y preparador físico. Analiza los siguientes datos de un jugador y genera consejos personalizados específicos para mejorar su rendimiento.
+
+        DATOS DEL JUGADOR:
+        - Nombre: {nombre_jugador}
+        - Edad: {edad} años
+        - Nivel de pádel declarado: {nivel_padel}
+        - Estado físico declarado: {estado_declarado}
+        - Nivel de rendimiento real (basado en análisis de video): {nivel_rendimiento}
+        - Evaluación: {evaluacion}
+        - Partidos analizados: {num_partidos}
+        
+        MÉTRICAS DE RENDIMIENTO (promedios por partido):
+        - Velocidad promedio: {velocidad_prom:.2f} m/s
+        - Aceleración promedio: {aceleracion_prom:.2f} m/s²
+        - Desplazamiento total acumulado: {desplazamiento_total:.1f} metros
+        
+        CONTEXTO:
+        - Si la evaluación es "Sobreestimó": el jugador cree estar en mejor forma de lo que realmente muestra
+        - Si la evaluación es "Subestimó": el jugador tiene mejor rendimiento del que cree
+        - Si la evaluación es "Declaró correctamente": hay coherencia entre percepción y realidad
+        
+        Genera un consejo personalizado de máximo 4-5 oraciones que incluya:
+        1. Una observación sobre su rendimiento actual
+        2. Un ejercicio o rutina específica para mejorar
+        3. Un consejo táctico para pádel
+        
+        Responde en español y de forma motivadora pero realista.
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text
+    
+    except Exception as e:
+        return f"⚠️ No se pudo generar el consejo con IA: {str(e)}"
 
 # =============================================================================
 # CARGA DE DATOS DESDE CSV
@@ -240,6 +309,45 @@ else:
                     dbc.CardHeader("💡 Recomendación Personalizada", style={'backgroundColor': COLORS['primary']}),
                     dbc.CardBody([
                         html.P(id='recomendacion-texto', className="lead")
+                    ])
+                ], style={'backgroundColor': COLORS['card']})
+            ])
+        ], className="mb-4"),
+        
+        # Consejo IA con Gemini
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.Span("🤖 Consejo Personalizado con IA ", style={'marginRight': '10px'}),
+                        html.Span("powered by Gemini", style={'fontSize': '12px', 'opacity': '0.7'})
+                    ], style={'backgroundColor': COLORS['primary']}),
+                    dbc.CardBody([
+                        dbc.Button(
+                            "✨ Generar Consejo con IA",
+                            id='btn-generar-consejo',
+                            color="danger",
+                            className="mb-3",
+                            style={'width': '100%'}
+                        ),
+                        dcc.Loading(
+                            id="loading-consejo",
+                            type="circle",
+                            children=[
+                                html.Div(
+                                    id='consejo-ia-texto',
+                                    className="lead",
+                                    style={
+                                        'whiteSpace': 'pre-wrap',
+                                        'backgroundColor': 'rgba(233, 69, 96, 0.1)',
+                                        'padding': '15px',
+                                        'borderRadius': '10px',
+                                        'borderLeft': f'4px solid {COLORS["accent"]}',
+                                        'minHeight': '100px'
+                                    }
+                                )
+                            ]
+                        )
                     ])
                 ], style={'backgroundColor': COLORS['card']})
             ])
@@ -586,6 +694,24 @@ if datos_cargados:
         return (resumen, kpi_rendimiento, kpi_estado, kpi_evaluacion, kpi_partidos,
                 recomendacion, fig_umap, fig_evolucion, fig_metricas, fig_radar,
                 perfil, historial, fig_dist)
+    
+    @callback(
+        Output('consejo-ia-texto', 'children'),
+        [Input('btn-generar-consejo', 'n_clicks')],
+        [State('selector-jugador', 'value')],
+        prevent_initial_call=True
+    )
+    def generar_consejo_callback(n_clicks, jugador_seleccionado):
+        if not jugador_seleccionado:
+            return "Selecciona un jugador primero."
+        
+        datos_jugador = matches[matches['player_name_clean'] == jugador_seleccionado].copy()
+        
+        if len(datos_jugador) == 0:
+            return "No hay datos disponibles para este jugador."
+        
+        consejo = generar_consejo_ia(datos_jugador, jugador_seleccionado)
+        return consejo
 
 # =============================================================================
 # EJECUCIÓN
