@@ -10,3 +10,8 @@ cmdstanpy
 statsmodels
 xgboost
 shap
+dash
+dash-bootstrap-components
+plotly
+umap-learn
+openpyxl
